@@ -1,0 +1,826 @@
+---
+title: "main"
+author: "sahilw2 - aidana2 - sdkathe2 - dbagchi2"
+date: "01/12/2019"
+output: pdf_document
+---
+
+```{r, message=FALSE}
+library(dplyr)
+library(MASS)
+library(imputeTS)
+library(rpart)
+library(glmnet)
+library(zoo)
+library(formattable)
+library(kableExtra)
+library(chron)
+library(tidyverse)
+library(caret)
+library(rpart.plot)
+library(randomForest)
+library(lmtest)
+library(gridExtra)
+library(xgboost)
+library(faraway)
+library(nlme)
+library(corrplot)
+library(imputeTS)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Abstract
+
+The main objective of this project is to predict the sales of the 111 potentially weather sensitive products like (umbrellas, bread, milk) around the time of major weather events at 45 of the Walmart's retail locations using statistical and machine learning techiniques. This is an important problem for any big retailer as it will help the replenishment manager to correctly plan and manage the inventory to avoid being out-of-stock or overstock during and after a storm. This will also help in timely intervention to manage the risks arising from the other unforseen circumstances.
+
+
+
+# Introduction
+
+[Walmart](https://en.wikipedia.org/wiki/Walmart) is an American multinational retail corporation that operates a chain of hypermarkets, discount department stores, and grocery stores, headquartered in Bentonville, Arkansas. The company was founded by Sam Walton in 1962 and incorporated on October 31, 1969. It also owns and operates Sam's Club retail warehouses. As of October 31, 2019, Walmart has 11,438 stores and clubs in 27 countries, operating under 55 different names.The company operates under the name Walmart in the United States and Canada, as Walmart de México y Centroamérica in Mexico and Central America, as Asda in the United Kingdom, as the Seiyu Group in Japan, and as Best Price in India. It has wholly owned operations in Argentina, Chile, Canada, and South Africa. Since August 2018, Walmart only holds a minority stake in Walmart Brasil, which was renamed Grupo Big in August 2019, with 20 percent of the company's shares, and private equity firm Advent International holding 80 percent ownership of the company.
+
+**Inventory Management:** Inventory management is a tricky function of any business and especially with business that are consumer facing, the management of the inventory for different stock keeping units at an optimal quantity becomes one of the critical parts of the business. Anything more than the optimal value might create overhead costs which might not be helpful as it might bring down the profitability and anything below the optimal number can cause consumers to leave the store and buy somewhere else. Hence, it become a key function for any consumer facing business to maintain an optimal invertory for each sku.
+The problem of inventory managment boils down to one important metric and that is nothing but the demand of a paricular item - which is difficult to predit without any scientific method and also time consuming. Therefore, the goal for a firm is to predict the demand for sku's and matain those.
+
+**Problem faced by Walmart:** With more than 11,000 stores across different geographies, inventory management becomes a necessay task for Walmart to focus on their custormers needs and to make sure the right products are available at the right place in the right quantity. The prediction problem at hand is for a subset of sku's - weather senstitive items like umbrellas, bread etc. around the time of the major weather events that makes it even more variable to predict the demand. Therefore, the task is to use analytical techniques to predict the demand for those essential sku's during the major weather events.
+
+
+
+
+&nbsp;
+
+&nbsp;
+
+
+
+
+
+
+
+
+
+# Methods
+
+## Data
+
+The data has been download from the Kaggle website. This dataset contains sales data for 111 products whose sales may be affected by weather (such as milk, bread , umbrellasetc.) These 111 products are sold in stores at 45 different Walmart locations. Some of the products may be a similar item (such as milk) but have a different id in different stores/regions/suppliers. The 45 locations are covered by 20 weather stations (i.e. some of the stores are nearby and share a weather station).
+
+For the purposes of this project, a weather event is defined as any day in which more than an inch of rain or two inches of snow was observed. The prediction is the units sold for a window of ±3 days surrounding each storm.
+
+The following graphic shows the layout of the test windows. The green dots are the training set days, the red dots are the test set days, and the event=True are the days with storms. Note that this plot is for the 20 weather stations. All days prior to 2013-04-01 are given out as training data.
+
+```{r, fig.align="center",fig.height=7,fig.width=8}
+# Define variable containing url
+url <- "https://storage.googleapis.com/kaggle-competitions/kaggle/4332/media/weather_events.png"
+library(png)
+library(RCurl)
+url_cont <- getURLContent(url)
+img <- readPNG(url_cont)
+rimg <- as.raster(img) # raster multilayer object
+r <- nrow(rimg) / ncol(rimg) # image ratio
+plot(rimg)
+```
+
+&nbsp;
+
+
+\newpage
+
+
+# Exploratory Data Analysis
+
+The descriptions of the data files and the field descriptions are given below.
+
+**Field descriptions**
+
+- `date` - the day of sales or weather
+- `store_nbr` - an id representing one of the 45 stores
+- `station_nbr` - an id representing one of 20 weather stations
+- `item_nbr` - an id representing one of the 111 products
+- `units` - the quantity sold of an item on a given day
+- `id` - a triplet representing a store_nbr, item_nbr, and date. Form the id by concatenating these (in that order) with an underscore. E.g. "2_1_2013-04-01" represents store 2, item 1, sold on 2013-04-01.
+
+**File descriptions**
+
+- `key.csv` - the relational mapping between stores and the weather stations that cover them
+- `sampleSubmission.csv` - file that gives the prediction format
+- `train.csv` - sales data for all stores & dates in the training set
+- `test.csv` - stores & dates for forecasting (missing 'units' that I have to predict)
+- `weather.csv` - a file containing the NOAA weather information for each station and day
+- `noaa_weather_qclcd_documentation.pdf` - a guide to understand the data provided in the weather.csv file
+
+\newpage
+
+## Data cleaning
+
+The data from raw csv files is initially loaded into R dataframes.
+
+```{r}
+key_data <- read.csv("data/key.csv")
+train_data <- read.csv("data/train.csv")
+weather_data <- read.csv("data/weather.csv")
+test_data <- read.csv("data/test.csv")
+```
+
+
+
+On early examination of the train dataset, we observed that for a large number of items, there were no sales recorded. Refer below image:
+
+
+```{r message=FALSE,echo=FALSE}
+library("dplyr")
+library("ggplot2")
+sales_stats <- train_data %>% mutate(store_item_combo = paste(.$store_nbr,"-",.$item_nbr)) %>%
+                group_by(store_item_combo) %>%
+                summarize(total_items = sum(units)) %>%
+                mutate(sales_flag = case_when(
+                  .$total_items == 0 ~ 'zero-sales',
+                  TRUE ~ 'non-zero sales'
+                )
+              ) %>%
+                 group_by(sales_flag) %>%
+                 count()
+ggplot(data=sales_stats, aes(x=sales_flag, y=n)) +
+  geom_bar(stat="identity", width=0.5) + labs(x= "Store Item Combination", y = "Units Sold")
+```
+
+With no past sales data with us, it makes sense  to remove these combinations from training set. On encountering such combination in our test set, we would predict the sales to be zero.
+
+## Data merging
+
+As discussed above, we first filter store and item number combinations having zero sales from the training dataset. Using attribute **store_nbr** and **item_nbr**, dataframe key is joined to train dataframe. The resulting dataframe is then joined to weather dataframe using attribute **station_nbr** and **date**. This join helped us to link the weather data recorded by the weather station in a particular store's region to the corresponding sales data for given date.Similar join was also performed on test dataset to get required features for prediction. R function __merge__ was used to implement this join.
+
+```{r message=FALSE}
+store_items_cnt <- train_data %>%
+                group_by(item_nbr, store_nbr) %>%
+                summarize(total_items = sum(units))
+train_data <- merge(train_data, store_items_cnt[store_items_cnt$total_items != 0, ], by = c("item_nbr", "store_nbr"))
+train_data <- dplyr::select(merge(merge(train_data, key_data, by = "store_nbr"), weather_data, by = c("date", "station_nbr")),
+               -c("total_items")
+)
+test_key_data <- merge(test_data, key_data, by = c("store_nbr"))
+test_data <- merge(test_key_data, weather_data, by = c("station_nbr", "date"))
+```
+
+
+
+## Feature Engineering
+
+Various important features can be extracted from the date attribute that impact the sales. Some of the examples include day of the week, month, year,etc. Below is a description about the new columns generated from Date:
+
+1. **Month:** Numeric attribute indicating the month.
+2. **Year:** Factor attribute indicating the year.
+3. **Day:** Numeric attribute indicating the day of month.
+4. **Weekdays:** Numeric attribute indicating the day of week.
+5. **Dayseries:** Numeric attribute which is an index for the dates starting with 0 for the oldest date and incementing by 1 for every date.
+6. **Season:** Factor attribute indicating season viz.winter,summer,fall or spring.
+7. **is_Holiday:** Boolean attribute indicating whether the given date is a holiday or not. 1 for holiday, 0 for not holiday.
+
+
+```{r message=FALSE,warning=F}
+numerical_features <- c("tmax", "tmin", "dewpoint", "wetbulb", "heat", "cool", "stnpressure",
+                       "sealevel", "resultspeed", "resultdir", "avgspeed")
+trace_features <- c("snowfall", "preciptotal")
+# sunrise and sunset has more than 50% of missing values
+factor_variables <- c("station_nbr", "item_nbr", "store_nbr")
+dropped_features <- c("codesum", "sunrise", "sunset", "depart", "tavg", "season", "isWeekend")
+holidays <- read.table('data/holidays.txt', sep = " ", fill = TRUE) %>%
+            filter(str_detect(V1, '^20')) %>%
+            mutate(date_holiday = str_c(V1, "-", V2, "-", V3), format = "%Y-%b-%d")
+holidays <- Reduce(c, lapply(holidays$date_holiday,FUN=function(x) as.Date(x, format = "%Y-%b-%d")))
+```
+
+```{r message=FALSE}
+check_holiday <- function(x) {
+print(x)
+ if(any(holidays == x)){
+   TRUE
+ }
+  FALSE
+}
+```
+
+
+```{r message=FALSE}
+create_features = function(df, is_train=TRUE, drop_columns=TRUE){
+  new_date <- as.Date(df$date, "%Y-%m-%d")
+  df$month <- as.factor(strftime(new_date, "%m"))
+  df$year <- as.factor(strftime(new_date, "%y"))
+  df$day <- as.factor(strftime(new_date, "%d"))
+  df$weekdays <- as.factor(weekdays(as.Date(df$date, "%Y-%m-%d")))
+  df$weekdays <- factor(df$weekdays, levels= c("Sunday", "Monday",
+    "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
+  df$is_weekend <- as.factor(df$weekdays %in% c("Sunday", "Saturday"))
+  min_date <- min(as.Date(df$date),na.rm=TRUE)
+  df$day_series <- as.numeric(as.Date(df$date)-min_date)
+  df$is_holiday <- sapply(as.character(df$date), FUN = function(x) ifelse(any(as.character(holidays) == x), 1, 0))
+  # train_data$holiday_info <- sapply(train_data$date, check_holiday)
+  yq <- as.yearqtr(as.yearmon(df$date, "%Y-%m-%d") + 1/12)
+  df$season <- as.factor(factor(format(yq, "%q"), levels = 1:4, labels = c("winter", "spring", "summer", "fall")))
+  df$date <- as.factor(df$date)
+  if(drop_columns == TRUE){
+   df <- df[, !colnames(df) %in% dropped_features]
+  }
+  df[numerical_features] <- sapply(df[numerical_features], as.character)
+  df[trace_features] <- sapply(df[trace_features], as.character)
+  df[df$preciptotal == "  T", ]$preciptotal <- "0.05"
+  df[df$snowfall == "  T", ]$snowfall <- "0.1"
+  df[df == "M"] <- NA
+  df[numerical_features] <- sapply(df[numerical_features], as.numeric)
+  df[trace_features] <- sapply(df[trace_features], as.numeric)
+  if(is_train == TRUE){
+    df$units <- as.numeric(df$units)
+  }
+  for(i in numerical_features){
+    df[is.na(df[,i]), i] <- median(df[,i], na.rm = TRUE)
+  }
+  for(i in trace_features){
+    df[is.na(df[,i]), i] <- median(df[,i], na.rm = TRUE)
+  }
+  df[factor_variables] <- lapply(df[factor_variables], factor)
+  df
+}
+```
+
+```{r message=FALSE}
+train_data <- create_features(train_data)
+test_data <- create_features(test_data, is_train = FALSE)
+```
+
+
+## Visualization of weather attributes and units sold.
+
+Below are some plots to study relationship between different weather attributes and units sold:
+
+
+```{r message=FALSE}
+library(ggplot2)
+#Snowfall vs items sold
+IQR_snowfall=IQR(train_data$snowfall)
+items_sold_snowfall <- train_data[train_data$snowfall < 1,] %>%
+  group_by(snowfall, year) %>%
+  summarise(items_sold = sum(units))
+p1=ggplot(items_sold_snowfall, aes(x = snowfall, y = items_sold,group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "snowfall", y = "Units Sold", colour = "Year") +
+  theme_classic()
+#Precipitation vs items sold
+IQR_preciptotal=IQR(train_data$preciptotal)
+items_sold_precip <- train_data[train_data$preciptotal < 1.5*IQR_preciptotal,] %>%
+  group_by(preciptotal, year) %>%
+  summarise(items_sold = sum(units))
+p2 = ggplot(items_sold_precip, aes(x = preciptotal, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "preciptotal", y = "Units Sold", colour = "Year") +
+  #scale_x_discrete(limits = weekdays(as.Date(4,"1970-01-01",tz="GMT")+0:6)) +
+  theme_classic()
+#tmax vs items sold
+items_sold_by_temperature <- train_data %>%
+  group_by(tmax, year) %>%
+  summarise(items_sold = sum(units))
+p3 = ggplot(items_sold_by_temperature, aes(x =tmax, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "tmax", y = "Units Sold", colour = "Year") +
+  theme_classic()
+#sealevel vs items sold
+items_sold_by_sealevel <- train_data %>%
+  group_by(sealevel, year) %>%
+  summarise(items_sold = sum(units))
+p4 = ggplot(items_sold_by_sealevel, aes(x =sealevel, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "sealevel", y = "Units Sold", colour = "Year") +
+  theme_classic()
+grid.arrange(p1,p2,p3,p4)
+```
+
+
+1. **Snowfall vs Units Sold:**
+
+It can be observed from the graph that the amount of snowfall received and units sold have an inverse relationship. It makes sense since people generally will avoid going outdoors and shopping on snowy days. When there is no snowfall, the number of items sold is highest.
+
+2. **Precipitation vs Units Sold:**
+
+Precipitation can be viewed as the chances of receiving rain, snow, sleet, freezing rain, and hail. While plotting, we removed outliers by removing datapoints exceeding 1.5 time the interquartile range. A trend similar to snowfall is observed in precipitation with respect to snowfall. On a clear sunny day, sale of items is maximum. Since precipitation will account for many other adverse weather conditions along with snowfall, it makes sense to include precipitation instead of snowfall.
+
+3. **Daily maximum temperature vs Units Sold:**
+
+tmax attribute gives the average daily temperature. Looking at the graph, we can conclude that sale of items is less for extreme temperatures, while days with temperatures between 40-90 degrees recorded high sales.
+
+4. **Sealevel vs Units Sold:**
+
+Sealevel provides the atmospheric pressure with respect to sea level. Pressures around 30 shows maximum item sales and it appears to be.
+
+
+
+## Visualization of date attributes and units sold.
+
+```{r warning=F, fig.align="center",fig.height=8,fig.width=15}
+# items sold per store
+items_per_store_per_year <- train_data %>%
+  group_by(store_nbr, year) %>%
+  summarise(items_sold = sum(units))
+p5=ggplot(items_per_store_per_year) +
+  coord_cartesian(ylim = c(1000,300000)) +
+  geom_bar(aes(x = store_nbr, y = items_sold, group = year, fill = factor(year)), stat = "identity") +
+  labs(x= "Store Number", y = "Units Sold", fill = "Year") +
+  theme_classic()
+items_sold_per_month <- train_data %>%
+  group_by(month, year) %>%
+  summarise(items_sold = sum(units))
+p6=ggplot(items_sold_per_month, aes(x = month, y = items_sold, group = year, colour = factor(year))) +
+  coord_cartesian(ylim = c(60000, 200000)) +
+  geom_line() +
+  geom_point() +
+  labs(x= "Month", y = "Units Sold", colour = "Year") +
+  #scale_x_discrete(labels=month.abb) +
+  theme_classic()
+items_sold_per_day_per_year <- train_data %>%
+  group_by(day, year) %>%
+  summarise(items_sold = sum(units))
+p7 = ggplot(items_sold_per_day_per_year, aes(x = day, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "Day of the month", y = "Units Sold", colour = "Year") +
+  # scale_x_discrete(labels=.abb) +
+  theme_classic()
+items_sold_per_dayOfWeek_per_year <- train_data %>%
+  group_by(weekdays, year) %>%
+  summarise(items_sold = sum(units))
+p8 = ggplot(items_sold_per_dayOfWeek_per_year, aes(x = weekdays, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "Day of the Week", y = "Units Sold", colour = "Year") +
+  #scale_x_discrete(limits = weekdays(as.Date(4,"1970-01-01",tz="GMT")+0:6)) +
+  theme_classic()
+grid.arrange(p5, p6,p7,p8)
+```
+
+1.**Items sold per store**
+
+The first graph shows the total sales per stores grouped yearly. It can be observed that the sales of items decreased between 2012 and 2014.
+
+2.**Items sold per month**
+
+The second graph shows the total sales per month. Being festive season, it can be observed that the sales are more between November and February. For rest of the year, the sales remain pretty constant. A small rise in sales can be observed during August, which also happens to be the beginning of academic term for students.
+
+3.**Items sold per day of the month**
+
+The third graph shows the variation of sales with the day of the month. The sales are more at the beginning of the month and drastically fall as the end of the month approaches. This logically makes sense, because, salaries are credited at the beginning of the month, increasing peoples purchasing power, which gradually decreases as the end of the month approaches.
+
+4.**Items sold per day of the week**
+
+The last graph shows the variation of sales with the day of the eek. The sales are low during weekdays and increases during Fridays and weekends, which again makes sense.
+
+##Correlation Heatmap
+
+
+
+```{r warning=F, fig.align="center",fig.height=8,fig.width=15}
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(cor(train_data[c(numerical_features,trace_features,'units')]), method = "color", col = col(200),
+         type = "upper", order = "hclust", number.cex = .7,
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col = "black", tl.srt = 90, # Text label color and rotation
+         # Combine with significance
+         p.mat = cor.mtest(train_data[c(numerical_features,trace_features,'units')])$p, sig.level = 0.01, insig = "blank",
+         # hide correlation coefficient on the principal diagonal
+         diag = FALSE)
+```
+
+Above figure shows correlation between available weather parameters and units sold. The blue colored tiles show positive correlation while red colored tiles are for negative correlation. The brightness of the tiles indicates the respective strength of correlation.
+It can be observed that units sale has a very weak correlation with weather parmeters, meaning that most of the weather parameters dont have a strong impact on the sales of items.
+
+\newpage
+
+# Linear Regression Model / Diagnostics
+
+Our baseline model contains all the information regarding weather, item, store etc. except date, station_nbr and is_weekend because these details our available via other predictors that we have in our model. From the table above we can see that this model is not good due to mulitple reasons. There are various predictors such as $dewpoint$, $sealevel$, $resultdir$ etc. that are non significant, that is, there $p-value$ is greater than $0.05$. The Kaggle score of our baseline model comes out to be around $0.51477$ which indicates flaws in this model.
+
+Below is the summary of the regression model:
+
+```{r warning=F,message=F}
+baseline_model <- lm(log(units + 1) ~ . -date -station_nbr -is_weekend, train_data)
+knitr::kable(summary(baseline_model)$coef, digits=5) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+From summary,it can be observed that most of the weather features have high p-value, which further supports our hypothesis that weather attributes dont have strong effect on sales. Using p-values as a reference, we decided to include tmax,preciptotal and sealevel as a metric in our model.
+
+Let's take a look at the diagnostic plots:
+
+```{r fig.align="center",fig.height=8,fig.width=15}
+plot(baseline_model)
+```
+
+1.**Residuals vs Fitted**
+
+The first diagnostic plot is used to identify non-linear patterns between residuals and fitted values. Looking at the plot, no specific pattern appears in the residuals.
+
+
+2.**Normal Q-Q Plot**
+
+The Q-Q plot is used to test the normality assumption of residuals. It can be observed that the residuals are not normally distributed. We need to address this issue before we can fit a linear model.
+
+3.**Scale Location Plot**
+
+This plot is used to test the homoscedasticity of the errors. A horizontal line with equally distributed points indicates homoscedasticity. Looking at the plot for our data, we see that the errors are not homoscedastic.
+
+4.**Residuals vs Leverage plot**
+
+This plot helps us to identify influential points by using Cooks distance. Since no points lie outside the Cooks distance threshold, we conclude that there are no influential points.
+
+Our Kaggle score for the baseline model is $0.51477$. It is very close to the all-zeros solution as we have not done any feature selection and just run the model on the entire dataset. This results in values very close to $0$ as the model is not sure of its predictions.
+
+```{r}
+vif(baseline_model)
+```
+
+From the VIF table also, we see that features such as $day\_series$, $stnpressure$, $cool$, $heat$  have very high Variance Inflation Factor values.
+
+### AIC
+
+The Akaike information criterion (AIC) is an estimated measure of of the quality of each of the possible model. Here is the formula for finding AIC for the model: $AIC$ = 2k - 2ln(L), where k is the number of parameters in the model and L is the likelihood of the model. We decided to show the backwards method, as forward method takes much more time.
+Step function, which selects the model based on AIC, works like this: by excluding one variable at a time, AIC for this variable turns out to be the AIC of the given model without this particular variable. After calculating all of the AIC, the variable without which model have higher AIC is excluded. This is done until the best model is found.
+
+```{r}
+knitr::include_graphics("/home/sahil/Downloads/image.png")
+```
+
+
+From this table we can see that the model was reduced to 13 variables based on AIC. The variables such as tmin, stnpressure, dewpoint, snowfall, heat, avgspeed and resultspeed were excluded from the model. Thus, we should consider to remove some of these variablse.
+
+### Lasso
+
+We decided to use LASSO Regression instead of Ridge Regression, because along with Regularization (variance ), LASSO Regression does variable selection by adding a penalty term to the absolute value of the magnitude of coefficients. This makes less contributive variables equal to zero.
+
+```{r}
+knitr::include_graphics("/home/sahil/Pictures/lasso.png")
+```
+
+From the above table for the LASSO Regression, we can see that the coefficients for tmin, dewpoint, heat, snowfall, resultspeed and avgspeed were set to zero. This indicates that these variables perform poorly in predicting the number of units purchased.
+
+### Tukey Test
+To evaluate the importance of categorical variables, we use Tukey test. Tukey test tells us if there is a difference between the different levels of the variable and whether we should keep it. From Appendix 1, we can observe that the p-values for the most of the intervals in the store number variable are less than 0.05. Thus, we conclude that store number variable is important  and this is what we expected. The same analysis can be applied to item number variable.
+
+From Appendix, we can see that p-values for almost all the intervals of weekdays are less than 0.05. This indicates that weekdays are significantly different from each other. The same procedure is applied to month, year and day variables. For these three variables, we observe similar results. Thus, we will keep these four variables in the model.
+
+## Improvements
+From the Correlation Table (That was shown in the Diagnostics), we saw that resultspeed, heat, tmin, dewpoint and wetbulb have high correlation with many other variables. This was confirmed from the VIF results too. Also, their p-values in the full model were low and the LASSO regression set their coefficients to zero.  For these reasons, we remove these variables from the full model. Based on AIC, p-values and VIF analysis, snowfall, stnpressure, resultdir and avgspeed variables will be removed too.
+
+From the Data Analysis part, we observed that month, day and weekdays variables follow some pattern, from which we can conclude that we can use them as continuous variables. That is why we will change their format to numeric. This will result in faster processing of the code and possibly better results.
+
+```{r}
+train_data$month <- as.POSIXlt(train_data$date)$mon
+train_data$day <- as.POSIXlt(train_data$date)$mday
+train_data$weekdays <- as.POSIXlt(train_data$date)$wday
+test_data$month <- as.POSIXlt(test_data$date)$mon
+test_data$day <- as.POSIXlt(test_data$date)$mday
+test_data$weekdays <- as.POSIXlt(test_data$date)$wday
+```
+
+One of the possible reasons, why we have nonnormal distribution of the errors and nonconstant variance, can be that our model underfits. Thus, we should test whether adding intersection variables and higher order variables can help.
+The possible intersection term can be store number and the maximum temperature, as stores are located in different cities and thereby have different maximum temperature.
+
+We will use Breusch-Pagan test to see whether new model has a constant variance. The nul and alternative hypotheses are:
+$H_0$: The errors have constant variance.
+$H_1$: There is  a heteroskedasticity
+
+```{r}
+bptest(lm(log(units + 1) ~ store_nbr*tmax + item_nbr + tmax + cool  + sealevel+ preciptotal + month + year + day + weekdays + is_holiday, train_data))
+```
+
+The p-value for Breusch–Pagan test is less than alpha, so we reject null hypothesis and conclude that residuals are still heteroskedastic.
+
+Trying adding the intersection for number of stores and cool doesn't improve the situation.
+
+```{r}
+bptest(lm(log(units + 1) ~ store_nbr*cool + item_nbr + tmax + cool  + sealevel+ preciptotal + month + year + day + weekdays + is_holiday,  train_data))
+```
+
+Adding the second order terms for tmax and preciptotal does not improve the constancy of errors too.
+
+```{r}
+bptest(lm(log(units + 1) ~ store_nbr+ item_nbr + I(tmax^2) + cool  + sealevel + preciptotal + month + year + day + weekdays+ is_holiday, train_data))
+```
+
+```{r}
+bptest(lm(log(units + 1) ~ store_nbr+ item_nbr + I(preciptotal^2) + cool  + sealevel + preciptotal + month + year + day + weekdays + is_holiday, train_data))
+```
+
+We are not adding the intersection and higher degree terms to the store number and item number because it is not feasible and it will make our models run much slower.
+
+The possible reason for nonconstancy of errors is that some variables are correlated with each other. That is why we will use Generalised Least Squares Model (GLSM) to see if it can make the erros more constant. The generalized least squares (GLS) estimator in linear regression is a generalization of the ordinary least squares (OLS) estimator. There are cases when the Ordinary Least Squares  estimator is not BLUE (best linear unbiased estimator) mainly because the errors are not heteroscedastic. In such situations, provided that the other BLUE assumptions are true, the GLS estimator can be used.
+
+```{r}
+gls_model <- gls(log(units + 1) ~ store_nbr + item_nbr + tmax + cool  + sealevel + preciptotal + month + year + day + weekdays + is_holiday, train_data)
+```
+
+```{r}
+plot(gls_model)
+```
+
+From the above plot, we see that errors still have non-constant variance, so GLS model didn't help.
+
+As the number of observations is very high, we couldn't run Generalized Linear Model to test whether GLM could make the errors normally distributed. The glm function for our model terminates Rstudio.
+
+
+This [paper](https://www.annualreviews.org/doi/pdf/10.1146/annurev.publhealth.23.100901.140546) discusses and shows that the t-test and least-squares linear regression do not require any assumption of Normal distribution in sufficiently large samples.
+As our dataset is quite large, we allow the errors to be not normally distributed. That is why we will use the following model as our best linear model.
+
+```{r}
+sample_mod <- lm(log(units + 1) ~ store_nbr + item_nbr + month + weekdays + day + year + tmax + cool + preciptotal + sealevel + is_holiday, train_data)
+knitr::kable(summary(sample_mod)$coef, digits=5) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+The p-value for this model is less than 0.05 and adjusted $R^2$ is equal to `r summary(sample_mod)$r.squared`. Also, the p-value for each variable is significat too, this indicates that we keep only important variables.
+The kaggle score for this model is equal to 0.13302.
+
+```{r, message=FALSE}
+test_data$date <- as.factor(test_data$date)
+test_data$predictions <- predict(sample_mod, test_data)
+test_data$predictions <- exp(test_data$predictions) - 1
+test_data$predictions[which(test_data$predictions < 0)] <- 0
+temp <- store_items_cnt[store_items_cnt$total_items > 0 ,]
+merged = merge(test_data, temp, by.x = c("store_nbr", "item_nbr"), by.y = c("store_nbr", "item_nbr"), all.x = TRUE)
+merged[which(is.na(merged$total_items)), "predictions"] = 0
+id <- paste(merged$store_nbr, merged$item_nbr, merged$date, sep = "_")
+write.table(cbind(id, merged$predictions),file="data/results.csv",sep =",", row.names=F,col.names=c('id','units'))
+```
+
+## Extra Models
+
+```{r}
+rpart_mod <- rpart(log(units + 1) ~ store_nbr + item_nbr + month + weekdays + day + year + tmax + cool + preciptotal + sealevel + is_holiday, train_data, cp = 0.001)
+```
+
+In advanced analysis we use two very different machine learning models.
+
+### Decision Tree
+
+Decision Trees (DT) comes from the family of non-parametric supervised learning models. They are both used for classification as well as Regression. Decision Trees build their logic in the form of a tree by breaking down the dataset into smaller chunks while at the same time developing the tree.
+
+The process of subsetting the data into smaller chunks begin by splitting. Splits are formed on a particular variables.
+Pruning is a process of shortening of branches of the tree. It is done by turning some branches of the tree to leaf nodes and removing the leaf nodes under the original branch. Pruning is required to avoid overfitting which is not a problem in our case, because we have a big data with minimal parameters.
+
+So the question comes to mind is which tree is the best. There could be multiple features and henceforth multiple splits. In theory, multiple features are tried to split the dataset. But a feature that results in highest purity is chosen as the one for splitting. **Entropy** is a inversely proportional to purity. If a system is completely pure, that is, all the points in the system have same class or value, then the entropy of that system is said to be zero. So, the objective of tree models is to reduce entropy of the tree.
+
+In brief, DT is like a flowchart with terminal/leaf nodes representing classification/decision values and inner nodes represent the logic which branches a tree to multiple directions.
+
+#### Why we used it?
+
+We used DT for mulitple reasons.
+- The data that we have is very similar to that of a time series data. Although we don't use time series modeling techniques like ARIMA, however we wanted to try out models that perform well on time related data. We experiment on the forecasting power of DT models.
+- From the diagnostics chart, we saw that Walmart data doesn't fulfill the assumptions of a linear model. Decision Tree models don't require any such assumption and work on data with different distributions.
+- It is computationally efficient.
+
+#### Data Processing
+
+One of the best part about tree based models is that it doesn't require any fancy data preprocessing. So we used the same in DT that we used for Linear Regression. We didn't do any further processing apart from basic feature engineering like that for Linear Models.
+
+#### Results
+
+
+```{r}
+plotcp(rpart_mod)
+```
+
+From the graph we can see that as the size of the tree increases, the cross validation error $xerror$ decreases. But it saturates after some value of cp. $cp$ refers to complexity parameter, as $cp$ decreases, the size of the tree increases. We find the best tree of size 22 to perform best. The Kaggle Score of this model comes out to be $0.15$ which is similar to that our linear model. It implies that we need more robust models that we explore in the later section.
+
+### Xgboost
+
+Xgboost comes from a family of boosting models. Xgboost stands for eXtreme Gradient Bossting. XGB is an ensemble method that builds up multiple weak learners and try to improve their performances iteratively. Models are built sequentially by minimizing the errors from previous models (weak learners) while boosting the performance of high-performing models.
+Gradient boosting method applies Gradient Descent Algorithm to find minima and minimize errors in sequential models. It uses tree based models to create ensembles.
+Boosting is a process of subsetting data with replacement. So one data point could be present in multiple weak learners that are built sequentially. Gradient descent is an optimization algorithm used to minimize some function by iteratively moving opposite to the direction of the gradient. This helps in achieving minima for that function. Gradient descent is a core optimization technique in most of the Deep Learning algorithms that don't have a closed form solution like Linear Regression.
+
+#### Why we used it?
+
+- As mentioned earlier, XGBoost uses decision trees inherently to create weak learners. We wanted to highlight the power of boosting techniques in regression tasks. Xgboost works pretty well on forecasting data as well. Moreover since it works on boosting technique, it is pretty good in avoiding overfitting.
+- One of the main reasons, that led us to use Xgboost is its computing power. Although, Xgboost creates a lot of trees and parameters, but it works parallely on each of those. So, it is really fast in updating parameters. One of the other reasons for choosing this model is Xgboost uses parallel optimization and handles missing values and regularization to reduce overfitting.
+
+#### Data Processing
+
+We didn't do any special treatment to the data and used the same format of data as we used to building linear regression models. Although, we removed missing data in preprocessing, ensemble methods like Xgboost don't require this step.
+
+#### Results
+
+
+```{r}
+knitr::include_graphics("/home/sahil/Pictures/lasso.png")
+```
+
+We used 2-fold Cross Valiation and we find that the best $RMSE$ comes out to be $0.52$. Our Kaggle score comes out to be $0.10951$ which way highes than other models that we have used for the analysis.
+
+
+
+## Appendix
+
+library(dplyr)
+library(MASS)
+library(imputeTS)
+library(rpart)
+library(glmnet)
+library(zoo)
+library(formattable)
+library(kableExtra)
+library(chron)
+library(tidyverse)
+library(caret)
+library(rpart.plot)
+library(randomForest)
+library(lmtest)
+library(gridExtra)
+library(xgboost)
+library(faraway)
+library(nlme)
+library(corrplot)
+library(imputeTS)
+key_data <- read.csv("data/key.csv")
+train_data <- read.csv("data/train.csv")
+weather_data <- read.csv("data/weather.csv")
+test_data <- read.csv("data/test.csv")
+library("dplyr")
+library("ggplot2")
+sales_stats <- train_data %>% mutate(store_item_combo = paste(.$store_nbr,"-",.$item_nbr)) %>%
+                group_by(store_item_combo) %>%
+                summarize(total_items = sum(units)) %>%
+                mutate(sales_flag = case_when(
+                  .$total_items == 0 ~ 'zero-sales',
+                  TRUE ~ 'non-zero sales'
+                )
+              ) %>%
+                 group_by(sales_flag) %>%
+                 count()
+ggplot(data=sales_stats, aes(x=sales_flag, y=n)) +
+  geom_bar(stat="identity", width=0.5) + labs(x= "Store Item Combination", y = "Units Sold")
+store_items_cnt <- train_data %>%
+                group_by(item_nbr, store_nbr) %>%
+                summarize(total_items = sum(units))
+train_data <- merge(train_data, store_items_cnt[store_items_cnt$total_items != 0, ], by = c("item_nbr", "store_nbr"))
+train_data <- dplyr::select(merge(merge(train_data, key_data, by = "store_nbr"), weather_data, by = c("date", "station_nbr")),
+               -c("total_items")
+)
+test_key_data <- merge(test_data, key_data, by = c("store_nbr"))
+test_data <- merge(test_key_data, weather_data, by = c("station_nbr", "date"))
+numerical_features <- c("tmax", "tmin", "dewpoint", "wetbulb", "heat", "cool", "stnpressure",
+                       "sealevel", "resultspeed", "resultdir", "avgspeed")
+trace_features <- c("snowfall", "preciptotal")
+factor_variables <- c("station_nbr", "item_nbr", "store_nbr")
+dropped_features <- c("codesum", "sunrise", "sunset", "depart", "tavg", "season", "isWeekend")
+holidays <- read.table('data/holidays.txt', sep = " ", fill = TRUE) %>%
+            filter(str_detect(V1, '^20')) %>%
+            mutate(date_holiday = str_c(V1, "-", V2, "-", V3), format = "%Y-%b-%d")
+holidays <- Reduce(c, lapply(holidays$date_holiday,FUN=function(x) as.Date(x, format = "%Y-%b-%d")))
+check_holiday <- function(x) {
+print(x)
+ if(any(holidays == x)){
+   TRUE
+ }
+  FALSE
+}
+create_features = function(df, is_train=TRUE, drop_columns=TRUE){
+  new_date <- as.Date(df$date, "%Y-%m-%d")
+  df$month <- as.factor(strftime(new_date, "%m"))
+  df$year <- as.factor(strftime(new_date, "%y"))
+  df$day <- as.factor(strftime(new_date, "%d"))
+  df$weekdays <- as.factor(weekdays(as.Date(df$date, "%Y-%m-%d")))
+  df$weekdays <- factor(df$weekdays, levels= c("Sunday", "Monday",
+    "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
+  df$is_weekend <- as.factor(df$weekdays %in% c("Sunday", "Saturday"))
+  min_date <- min(as.Date(df$date),na.rm=TRUE)
+  df$day_series <- as.numeric(as.Date(df$date)-min_date)
+  df$is_holiday <- sapply(as.character(df$date), FUN = function(x) ifelse(any(as.character(holidays) == x), 1, 0))
+  # train_data$holiday_info <- sapply(train_data$date, check_holiday)
+  yq <- as.yearqtr(as.yearmon(df$date, "%Y-%m-%d") + 1/12)
+  df$season <- as.factor(factor(format(yq, "%q"), levels = 1:4, labels = c("winter", "spring", "summer", "fall")))
+  df$date <- as.factor(df$date)
+  if(drop_columns == TRUE){
+   df <- df[, !colnames(df) %in% dropped_features]
+  }
+  df[numerical_features] <- sapply(df[numerical_features], as.character)
+  df[trace_features] <- sapply(df[trace_features], as.character)
+  df[df$preciptotal == "  T", ]$preciptotal <- "0.05"
+  df[df$snowfall == "  T", ]$snowfall <- "0.1"
+  df[df == "M"] <- NA
+  df[numerical_features] <- sapply(df[numerical_features], as.numeric)
+  df[trace_features] <- sapply(df[trace_features], as.numeric)
+  if(is_train == TRUE){
+    df$units <- as.numeric(df$units)
+  }
+  for(i in numerical_features){
+    df[is.na(df[,i]), i] <- median(df[,i], na.rm = TRUE)
+  }
+  for(i in trace_features){
+    df[is.na(df[,i]), i] <- median(df[,i], na.rm = TRUE)
+  }
+  df[factor_variables] <- lapply(df[factor_variables], factor)
+  df
+}
+train_data <- create_features(train_data)
+test_data <- create_features(test_data, is_train = FALSE)
+library(ggplot2)
+#Snowfall vs items sold
+IQR_snowfall=IQR(train_data$snowfall)
+items_sold_snowfall <- train_data[train_data$snowfall < 1,] %>%
+  group_by(snowfall, year) %>%
+  summarise(items_sold = sum(units))
+p1=ggplot(items_sold_snowfall, aes(x = snowfall, y = items_sold,group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "snowfall", y = "Units Sold", colour = "Year") +
+  theme_classic()
+#Precipitation vs items sold
+IQR_preciptotal=IQR(train_data$preciptotal)
+items_sold_precip <- train_data[train_data$preciptotal < 1.5*IQR_preciptotal,] %>%
+  group_by(preciptotal, year) %>%
+  summarise(items_sold = sum(units))
+p2 = ggplot(items_sold_precip, aes(x = preciptotal, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "preciptotal", y = "Units Sold", colour = "Year") +
+  #scale_x_discrete(limits = weekdays(as.Date(4,"1970-01-01",tz="GMT")+0:6)) +
+  theme_classic()
+#tmax vs items sold
+items_sold_by_temperature <- train_data %>%
+  group_by(tmax, year) %>%
+  summarise(items_sold = sum(units))
+p3 = ggplot(items_sold_by_temperature, aes(x =tmax, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "tmax", y = "Units Sold", colour = "Year") +
+  theme_classic()
+#sealevel vs items sold
+items_sold_by_sealevel <- train_data %>%
+  group_by(sealevel, year) %>%
+  summarise(items_sold = sum(units))
+p4 = ggplot(items_sold_by_sealevel, aes(x =sealevel, y = items_sold, group = year, colour = factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(x= "sealevel", y = "Units Sold", colour = "Year") +
+  theme_classic()
+grid.arrange(p1,p2,p3,p4)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(cor(train_data[c(numerical_features,trace_features,'units')]), method = "color", col = col(200),
+         type = "upper", order = "hclust", number.cex = .7,
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col = "black", tl.srt = 90, # Text label color and rotation
+         # Combine with significance
+         p.mat = cor.mtest(train_data[c(numerical_features,trace_features,'units')])$p, sig.level = 0.01, insig = "blank",
+         # hide correlation coefficient on the principal diagonal
+         diag = FALSE)
+baseline_model <- lm(log(units + 1) ~ . -date -station_nbr -is_weekend, train_data)
+knitr::kable(summary(baseline_model)$coef, digits=5) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+plot(baseline_model)
+vif(baseline_model)
+aic_b <- step(baseline_model, trace = FALSE)
+X <- model.matrix(baseline_model)
+lasso_baseline_cv <- cv.glmnet(X[, -1], log(train_data$units + 1), family="gaussian", alpha = 1)
+lasso_baseline <- glmnet(X[, -1], log(train_data$units + 1), family="gaussian", alpha = 1, lambda = lasso_baseline_cv$lambda.min)
+aic_b <- step(baseline_model)
+TukeyHSD(aov(units ~ store_nbr, train_data))
+TukeyHSD(aov(units ~ weekdays, train_data))
+TukeyHSD(aov(units ~ month, train_data))
+TukeyHSD(aov(units ~ day, train_data))
+TukeyHSD(aov(units ~ year, train_data))
+train_data$month <- as.POSIXlt(train_data$date)$mon
+train_data$day <- as.POSIXlt(train_data$date)$mday
+train_data$weekdays <- as.POSIXlt(train_data$date)$wday
+test_data$month <- as.POSIXlt(test_data$date)$mon
+test_data$day <- as.POSIXlt(test_data$date)$mday
+test_data$weekdays <- as.POSIXlt(test_data$date)$wday
+bptest(lm(log(units + 1) ~ store_nbr*tmax + item_nbr + tmax + cool  + sealevel+ preciptotal + month + year + day + weekdays + is_holiday, train_data))
+bptest(lm(log(units + 1) ~ store_nbr*cool + item_nbr + tmax + cool  + sealevel+ preciptotal + month + year + day + weekdays + is_holiday,  train_data))
+bptest(lm(log(units + 1) ~ store_nbr+ item_nbr + I(tmax^2) + cool  + sealevel + preciptotal + month + year + day + weekdays+ is_holiday, train_data))
+bptest(lm(log(units + 1) ~ store_nbr+ item_nbr + I(preciptotal^2) + cool  + sealevel + preciptotal + month + year + day + weekdays + is_holiday, train_data))
+gls_model <- gls(log(units + 1) ~ store_nbr + item_nbr + tmax + cool  + sealevel + preciptotal + month + year + day + weekdays + is_holiday, train_data)
+plot(gls_model)
+sample_mod <- lm(log(units + 1) ~ store_nbr + item_nbr + month + weekdays + day + year + tmax + cool + preciptotal + sealevel + is_holiday, train_data)
+knitr::kable(summary(sample_mod)$coef, digits=5) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+test_data$date <- as.factor(test_data$date)
+test_data$predictions <- predict(rpart_mod, test_data)
+test_data$predictions <- exp(test_data$predictions) - 1
+test_data$predictions[which(test_data$predictions < 0)] <- 0
+temp <- store_items_cnt[store_items_cnt$total_items > 0 ,]
+merged = merge(test_data, temp, by.x = c("store_nbr", "item_nbr"), by.y = c("store_nbr", "item_nbr"), all.x = TRUE)
+merged[which(is.na(merged$total_items)), "predictions"] = 0
+id <- paste(merged$store_nbr, merged$item_nbr, merged$date, sep = "_")
+write.table(cbind(id, merged$predictions),file="data/results.csv",sep =",", row.names=F,col.names=c('id','units'))
+rpart_mod <- rpart(log(units + 1) ~ store_nbr + item_nbr + month + weekdays + day + year + tmax + cool + preciptotal + sealevel + is_holiday, train_data, cp = 0.001)
+set.seed(42)
+ctrl <- trainControl(method = "cv", number = 2, allowParallel = TRUE, verboseIter = FALSE, returnData = FALSE)
+xgb_mod <- caret::train(
+  log(units + 1) ~ store_nbr + item_nbr + month + weekdays + day + year + tmax + cool + preciptotal + sealevel + is_holiday,
+  train_data,
+  method = "xgbTree",
+  trControl = ctrl
+)
+plotcp(rpart_mod)
